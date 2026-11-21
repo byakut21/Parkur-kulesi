@@ -55,8 +55,12 @@ func _ready() -> void:
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_hint.offset_top = -40
 	_hint.offset_bottom = -12
-	_hint.text = "WASD: koş   Fare: kamera   Boşluk: zıpla (duvara değerken: duvar zıplama)   Shift/C: kay / çömel   Esc: duraklat"
+	_hint.text = "WASD: koş   Fare: kamera   Boşluk: zıpla (duvara değerken: duvar zıplama)   Shift/C: kay / çömel   Esc: duraklat   M: ses"
 	_hint.modulate = Color(1, 1, 1, 0.8)
+
+
+func set_touch_hint() -> void:
+	_hint.visible = false  # dokunmatikte kontroller menü ekranında anlatılır
 
 
 func _label(size: int, pos: Vector2) -> Label:

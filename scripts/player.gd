@@ -2,6 +2,10 @@ extends CharacterBody3D
 ## Üçüncü şahıs parkur karakteri: koşma, değişken yükseklikte zıplama,
 ## duvar zıplama / duvarda kayma, kayma (slide) ve çömelerek yürüme.
 
+const Kid := preload("res://scripts/kid.gd")
+
+signal jumped
+signal landed(impact: float)
 signal wall_jumped
 signal slid
 
@@ -25,7 +29,7 @@ const SLIDE_TIME := 0.75
 const SLIDE_DECEL := 9.0
 const COYOTE_TIME := 0.12
 const JUMP_BUFFER := 0.15
-const STAND_HEIGHT := 1.8
+const STAND_HEIGHT := 1.5
 const CROUCH_HEIGHT := 0.9
 const RADIUS := 0.4
 const MOUSE_SENS := 0.0025
@@ -38,7 +42,7 @@ var cam_pitch := -0.35
 var _pivot: Node3D
 var _spring: SpringArm3D
 var camera: Camera3D
-var _visual: Node3D
+var _visual: Kid
 var _shape: CollisionShape3D
 var _capsule: CapsuleShape3D
 
@@ -66,7 +70,7 @@ func _ready() -> void:
 	_build_visual()
 
 	_pivot = Node3D.new()
-	_pivot.position.y = 1.4
+	_pivot.position.y = 1.3
 	add_child(_pivot)
 	_spring = SpringArm3D.new()
 	_spring.spring_length = 6.0
@@ -85,42 +89,8 @@ func _ready() -> void:
 
 
 func _build_visual() -> void:
-	_visual = Node3D.new()
+	_visual = Kid.new()
 	add_child(_visual)
-	var body := MeshInstance3D.new()
-	var cap := CapsuleMesh.new()
-	cap.radius = RADIUS
-	cap.height = STAND_HEIGHT
-	body.mesh = cap
-	body.position.y = STAND_HEIGHT * 0.5
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.95, 0.35, 0.25)
-	mat.roughness = 0.5
-	body.material_override = mat
-	_visual.add_child(body)
-	# Yüzün baktığı yönü gösteren vizör (-Z yönü ileri)
-	var visor := MeshInstance3D.new()
-	var vb := BoxMesh.new()
-	vb.size = Vector3(0.5, 0.18, 0.2)
-	visor.mesh = vb
-	visor.position = Vector3(0, 1.45, -0.33)
-	var vmat := StandardMaterial3D.new()
-	vmat.albedo_color = Color(0.2, 0.9, 1.0)
-	vmat.emission_enabled = true
-	vmat.emission = Color(0.2, 0.9, 1.0)
-	vmat.emission_energy_multiplier = 1.5
-	visor.material_override = vmat
-	_visual.add_child(visor)
-	# Sırt çantası
-	var pack := MeshInstance3D.new()
-	var pb := BoxMesh.new()
-	pb.size = Vector3(0.45, 0.55, 0.22)
-	pack.mesh = pb
-	pack.position = Vector3(0, 1.05, 0.38)
-	var pmat := StandardMaterial3D.new()
-	pmat.albedo_color = Color(0.2, 0.22, 0.3)
-	pack.material_override = pmat
-	_visual.add_child(pack)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -209,6 +179,7 @@ func _physics_process(delta: float) -> void:
 		if (on_floor or _coyote > 0.0) and (not _crouched or _can_stand()):
 			vy = JUMP_VELOCITY
 			_ground_jump = true
+			jumped.emit()
 			_coyote = 0.0
 			_jump_buffer = 0.0
 			_slide_timer = 0.0  # kayarken zıplamak hızı korur (uzun atlayış)
@@ -238,12 +209,23 @@ func _physics_process(delta: float) -> void:
 			vy = -WALL_SLIDE_SPEED
 
 	velocity = Vector3(hv.x, vy, hv.z)
+	var fall_speed := -velocity.y
 	move_and_slide()
+	if not on_floor and is_on_floor() and fall_speed > 6.0:
+		landed.emit(fall_speed)
 
 	# Görselin yönü
 	var face := Vector3(velocity.x, 0.0, velocity.z)
 	if face.length() > 0.5:
 		_visual.rotation.y = lerp_angle(_visual.rotation.y, atan2(-face.x, -face.z), minf(1.0, 12.0 * delta))
+	var pose := "ground"
+	if _slide_timer > 0.0:
+		pose = "slide"
+	elif not is_on_floor():
+		pose = "wall" if is_on_wall() and velocity.y < 0.0 else "air"
+	elif _crouched:
+		pose = "crouch"
+	_visual.animate(delta, face.length(), velocity.y, pose)
 
 
 ## Yakındaki dikey duvarın normalini bulur (yoksa Vector3.ZERO).
@@ -251,7 +233,7 @@ func _find_wall() -> Vector3:
 	var space := get_world_3d().direct_space_state
 	var best := Vector3.ZERO
 	var best_d := INF
-	var heights := [0.5, 1.2]
+	var heights := [0.4, 1.0]
 	for h in heights:
 		var from := global_position + Vector3(0.0, h * (_capsule.height / STAND_HEIGHT), 0.0)
 		for i in 12:
@@ -289,5 +271,4 @@ func _set_crouch(c: bool) -> void:
 	_crouched = c
 	_capsule.height = CROUCH_HEIGHT if c else STAND_HEIGHT
 	_shape.position.y = _capsule.height * 0.5
-	_visual.scale.y = _capsule.height / STAND_HEIGHT
-	_pivot.position.y = 0.9 if c else 1.4
+	_pivot.position.y = 0.9 if c else 1.3

@@ -4,6 +4,8 @@ extends Node3D
 const Player := preload("res://scripts/player.gd")
 const Tower := preload("res://scripts/tower.gd")
 const Hud := preload("res://scripts/hud.gd")
+const TouchControls := preload("res://scripts/touch_controls.gd")
+const Sound := preload("res://scripts/sound.gd")
 
 const SAVE_PATH := "user://best_score.save"
 const LAVA_START_Y := -6.0
@@ -31,6 +33,9 @@ var max_height := 0.0
 var gems := 0
 var best := 0
 var _was_captured := false
+var touch_mode := false
+var touch: Control
+var sound: Node
 
 
 func _ready() -> void:
@@ -50,19 +55,32 @@ func _ready() -> void:
 	add_child(player)
 	# Kamera spiralin ilerleme yönüne (teğet, +Z) baksın
 	player.cam_yaw = PI
-	player.wall_jumped.connect(func(): hud.toast("Duvar zıplama!"))
+	sound = Sound.new()
+	add_child(sound)
+	player.wall_jumped.connect(_on_wall_jump)
+	player.jumped.connect(func(): sound.play("jump", -2.0))
+	player.slid.connect(func(): sound.play("slide"))
+	player.landed.connect(func(impact: float): sound.play("land", clampf(impact - 14.0, -10.0, 0.0)))
 
 	_build_lava()
 
 	hud = Hud.new()
 	add_child(hud)
+	touch_mode = DisplayServer.is_touchscreen_available() or OS.has_feature("mobile")
+	if touch_mode:
+		touch = TouchControls.new()
+		touch.target = player
+		touch.visible = false
+		touch.pause_pressed.connect(_on_touch_pause)
+		hud.add_child(touch)
+		hud.set_touch_hint()
 
 	tower.update_for(0.0, lava_y)
 	if skip_menu:
 		skip_menu = false
 		_start()
 	else:
-		hud.show_overlay("PARKUR KULESİ", "Lav yükseliyor! Kuleye tırman, olabildiğince yükseğe çık.\n\nBaşlamak için TIKLA ya da ENTER'a bas\n\nEn iyi skor: %d" % best)
+		hud.show_overlay("PARKUR KULESİ", "Lav yükseliyor! Kuleye tırman, olabildiğince yükseğe çık.\n\n%s\n\nEn iyi skor: %d" % [_tap_text("Başlamak için"), best])
 	_update_hud()
 
 
@@ -83,6 +101,7 @@ func _setup_input() -> void:
 	_action("slide", [KEY_SHIFT, KEY_C, KEY_CTRL], [JOY_BUTTON_B, JOY_BUTTON_RIGHT_SHOULDER], [])
 	_action("pause", [KEY_ESCAPE, KEY_P], [JOY_BUTTON_START], [])
 	_action("restart", [KEY_R, KEY_ENTER], [JOY_BUTTON_Y], [])
+	_action("mute", [KEY_M], [JOY_BUTTON_BACK], [])
 
 
 func _action(action_name: String, keys: Array, buttons: Array, axes: Array) -> void:
@@ -170,15 +189,34 @@ func _place_lava() -> void:
 
 # ---------------------------------------------------------------- oyun akışı
 
+func _on_touch_pause() -> void:
+	if state == State.PLAYING:
+		_pause(true)
+
+
+func _tap_text(prefix: String) -> String:
+	if touch_mode:
+		return "Sol taraf: koş   Sağ taraf: kamera   ZIPLA / KAY butonları\nDuvara değerken ZIPLA: duvar zıplama\n\n" + prefix + " EKRANA DOKUN"
+	return prefix + " TIKLA ya da ENTER'a bas"
+
+
+func _set_touch_visible(v: bool) -> void:
+	if touch:
+		touch.visible = v
+		touch.release_all()
+
+
 func _start() -> void:
 	state = State.PLAYING
 	player.controls_enabled = true
 	hud.hide_overlay()
+	_set_touch_visible(true)
+	sound.start_music()
 	_capture_mouse()
 
 
 func _capture_mouse() -> void:
-	if DisplayServer.get_name() != "headless":
+	if DisplayServer.get_name() != "headless" and not touch_mode:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
@@ -186,12 +224,16 @@ func _pause(p: bool) -> void:
 	if p:
 		state = State.PAUSED
 		get_tree().paused = true
+		sound.set_paused(true)
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		hud.show_overlay("DURAKLATILDI", "Devam etmek için TIKLA ya da ENTER'a bas")
+		_set_touch_visible(false)
+		hud.show_overlay("DURAKLATILDI", _tap_text("Devam etmek için"))
 	else:
 		state = State.PLAYING
 		get_tree().paused = false
+		sound.set_paused(false)
 		hud.hide_overlay()
+		_set_touch_visible(true)
 		_capture_mouse()
 	_was_captured = false
 
@@ -199,14 +241,16 @@ func _pause(p: bool) -> void:
 func _die() -> void:
 	state = State.DEAD
 	player.controls_enabled = false
+	sound.play("death")
+	_set_touch_visible(false)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	var score := _score()
 	var record := score > best
 	if record:
 		best = score
 		_save_best()
-	var sub := "Yükseklik: %d m   Kristal: %d   Süre: %d sn\nSkor: %d%s\n\nTekrar denemek için TIKLA, R ya da ENTER" % [
-		int(max_height), gems, int(elapsed), score, "   YENİ REKOR!" if record else "   (En iyi: %d)" % best]
+	var sub := "Yükseklik: %d m   Kristal: %d   Süre: %d sn\nSkor: %d%s\n\n%s" % [
+		int(max_height), gems, int(elapsed), score, "   YENİ REKOR!" if record else "   (En iyi: %d)" % best, _tap_text("Tekrar denemek için")]
 	hud.show_overlay("LAVA DÜŞTÜN!", sub)
 
 
@@ -220,13 +264,26 @@ func _score() -> int:
 	return int(max_height) * 10 + gems * GEM_SCORE
 
 
+func _on_wall_jump() -> void:
+	hud.toast("Duvar zıplama!")
+	sound.play("wall_jump")
+
+
 func _on_gem() -> void:
 	gems += 1
+	sound.play("gem")
 	hud.toast("+%d" % GEM_SCORE)
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	var click: bool = event is InputEventMouseButton and event.pressed
+	if event.is_action_pressed("mute"):
+		hud.toast("Ses kapalı" if sound.toggle_mute() else "Ses açık")
+		return
+	var click: bool
+	if touch_mode:
+		click = event is InputEventScreenTouch and event.pressed
+	else:
+		click = event is InputEventMouseButton and event.pressed
 	match state:
 		State.MENU:
 			if click or event.is_action_pressed("restart") or event.is_action_pressed("jump"):
@@ -278,6 +335,8 @@ func _physics_process(delta: float) -> void:
 func _update_hud() -> void:
 	hud.set_stats(max_height, _score(), best, gems, elapsed)
 	hud.set_lava(player.global_position.y - lava_y, lava_speed)
+	if sound:
+		sound.set_lava_distance(player.global_position.y - lava_y)
 
 
 func _load_best() -> void:

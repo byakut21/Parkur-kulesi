@@ -1,0 +1,3 @@
+Casual_Hoodie.gltf — "Ultimate Modular Men Pack" (Şubat 2022), yazar: Quaternius (https://quaternius.com)
+Lisans: CC0 1.0 Universal (kamu malı) — https://creativecommons.org/publicdomain/zero/1.0/
+Oyunda ölçek, kafa oranı ve kıyafet renkleri kodla değiştirilir (scripts/kid.gd).

@@ -1,0 +1,136 @@
+name: Derleme (Web + Android)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GODOT_VERSION: "4.3"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Godot önbelleği
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/godot
+            ~/.local/share/godot/export_templates
+          key: godot-${{ env.GODOT_VERSION }}-web-android
+
+      - name: Godot ve şablonları indir
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          V=${GODOT_VERSION}
+          mkdir -p ~/godot ~/.local/share/godot/export_templates/${V}.stable
+          cd ~/godot
+          wget -q https://github.com/godotengine/godot/releases/download/${V}-stable/Godot_v${V}-stable_linux.x86_64.zip
+          unzip -q Godot_v${V}-stable_linux.x86_64.zip
+          mv Godot_v${V}-stable_linux.x86_64 godot
+          rm Godot_v${V}-stable_linux.x86_64.zip
+          wget -q https://github.com/godotengine/godot/releases/download/${V}-stable/Godot_v${V}-stable_export_templates.tpz
+          unzip -q Godot_v${V}-stable_export_templates.tpz 'templates/web*' 'templates/android*' 'templates/version.txt'
+          mv templates/* ~/.local/share/godot/export_templates/${V}.stable/
+          rm -rf templates Godot_v${V}-stable_export_templates.tpz
+
+      - name: Godot editör ayarları (Android SDK / Java yolu)
+        run: |
+          mkdir -p ~/.config/godot
+          cat > ~/.config/godot/editor_settings-4.3.tres <<EOT
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "${ANDROID_HOME}"
+          export/android/java_sdk_path = "${JAVA_HOME}"
+          EOT
+          sed -i 's/^          //' ~/.config/godot/editor_settings-4.3.tres
+          cat ~/.config/godot/editor_settings-4.3.tres
+
+      - name: Projeyi içe aktar
+        run: ~/godot/godot --headless --editor --quit || true
+
+      - name: Mekanik testleri
+        run: ~/godot/godot --headless -s res://tests/mechanics_test.gd
+
+      - name: Web export
+        run: |
+          mkdir -p build/web
+          ~/godot/godot --headless --export-release "Web" build/web/index.html
+          test -f build/web/index.wasm
+
+      - name: İmza anahtarı
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > $RUNNER_TEMP/release.keystore
+            echo "GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD=$KEYSTORE_PASS" >> $GITHUB_ENV
+          else
+            echo "Gizli anahtar yok; geçici imza anahtarı üretiliyor."
+            keytool -genkeypair -v -keystore $RUNNER_TEMP/release.keystore -alias parkur \
+              -keyalg RSA -keysize 2048 -validity 10000 -storepass parkur123 -keypass parkur123 \
+              -dname "CN=Parkur Kulesi"
+            echo "GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD=parkur123" >> $GITHUB_ENV
+          fi
+          echo "GODOT_ANDROID_KEYSTORE_RELEASE_PATH=$RUNNER_TEMP/release.keystore" >> $GITHUB_ENV
+          echo "GODOT_ANDROID_KEYSTORE_RELEASE_USER=parkur" >> $GITHUB_ENV
+
+      - name: Android export (APK)
+        run: |
+          mkdir -p build/android
+          ~/godot/godot --headless --export-release "Android" build/android/parkur-kulesi.apk
+          ls -la build/android
+          test -f build/android/parkur-kulesi.apk
+
+      - name: APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: parkur-kulesi-apk
+          path: build/android/parkur-kulesi.apk
+
+      - name: Web yapısı
+        uses: actions/upload-artifact@v4
+        with:
+          name: parkur-kulesi-web
+          path: build/web
+
+      - name: Web sürümünü yayınla (gh-pages)
+        if: github.event_name != 'pull_request'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: build/web
+          force_orphan: true
+
+      - name: APK'yı "Son sürüm" olarak yayınla
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: son-surum
+          name: Parkur Kulesi — son sürüm
+          body: |
+            Android telefona kurmak için aşağıdaki **parkur-kulesi.apk** dosyasını telefondan indirip açın.
+            (İlk kurulumda "bilinmeyen kaynaklardan yükleme" izni istenebilir.)
+            Tarayıcıda oynamak için: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+          files: build/android/parkur-kulesi.apk
+          make_latest: true
